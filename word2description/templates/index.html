@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+
+{% block title %}MultiChat Example{% endblock %}
+{% block header_text %}MultiChat Example{% endblock %}
+
+{% block content %}
+
+    <ul class="rooms">
+        {% for room in questions %}
+            <li class="question-link" data-room-id="{{ room.id }}">{{ room }}</li>
+        {% empty %}
+            <p class="empty">No question channel defined.</p>
+        {% endfor %}
+        {% for room in answers %}
+            <li class="answer-link" data-room-id="{{ room.id }}">{{ room }}</li>
+        {% empty %}
+            <p class="empty">No answer channel defined.</p>
+        {% endfor %}
+    </ul>
+
+    <div id="chats">
+    </div>
+
+{% endblock %}
+
+
+{% block extra_body %}
+    <script>
+        $(function () {
+            // Correctly decide between ws:// and wss://
+            var ws_scheme = window.location.protocol == "https:" ? "wss" : "ws";
+            var questioner_path = ws_scheme + '://' + window.location.host + "/connect/questioner/";
+            var answerer_path = ws_scheme + '://' + window.location.host + "/connect/answerer/";
+            console.log("Connecting to " + questioner_path);
+            console.log("Connecting to " + answerer_path);
+            var questioner = new ReconnectingWebSocket(questioner_path);
+            var answerer = new ReconnectingWebSocket(answerer_path);
+
+            var add_room = function(mysocket, myroom, start_game, leave_game) {
+                // Handle incoming messages
+                mysocket.onmessage = function (message) {
+                    // Decode the JSON
+                    console.log("Got websocket message " + message.data);
+                    var data = JSON.parse(message.data);
+                    // Handle errors
+                    if (data.error) {
+                        alert(data.error);
+                        return;
+                    }
+                    // Handle joining
+                    if (data.join) {
+                        console.log("Joining room " + data.join);
+                        var roomdiv = $(
+                                "<div class='room' id='" + myroom + data.join + "'>" +
+                                "<h2>" + data.title + "</h2>" +
+                                "<div class='messages'></div>" +
+                                "<form><input><button>Send</button></form>" +
+                                "</div>"
+                        );
+                        // Hook up send button to send a message
+                        roomdiv.find("form").on("submit", function () {
+                            mysocket.send(JSON.stringify({
+                                "command": "send",
+                                "room": data.join,
+                                "message": roomdiv.find("input").val()
+                            }));
+                            roomdiv.find("input").val("");
+                            return false;
+                        });
+                        $("#chats").append(roomdiv);
+                        $("li." + myroom + "link").text(function(i, oldText) {
+                            return leave_game;
+                        });
+                        // Handle leaving
+                    } else if (data.leave) {
+                        console.log("Leaving room " + data.leave);
+                        $("#" + myroom + data.leave).remove();
+                        $("li." + myroom + "link").text(function(i, oldText) {
+                            return start_game;
+                        });
+                        // Handle getting a message
+                    } else if (data.message || data.msg_type != 0) {
+                        var msgdiv = $("#" + myroom + data.room + " .messages");
+                        var ok_msg = "";
+                        // msg types are defined in chat/settings.py
+                        // Only for demo purposes is hardcoded, in production scenarios, consider call a service.
+                        switch (data.msg_type) {
+                            case 0:
+                                // Message
+                                ok_msg = "<div class='message'>" +
+                                        "<span class='username'>" + data.username + "</span>" +
+                                        "<span class='body'>" + data.message + "</span>" +
+                                        "</div>";
+                                break;
+                            case 1:
+                                // Warning / Advice messages
+                                ok_msg = "<div class='contextual-message text-warning'>" + data.message +
+                                        "</div>";
+                                break;
+                            case 2:
+                                // Alert / Danger messages
+                                ok_msg = "<div class='contextual-message text-danger'>" + data.message +
+                                        "</div>";
+                                break;
+                            case 3:
+                                // "Muted" messages
+                                ok_msg = "<div class='contextual-message text-muted'>" + data.message +
+                                        "</div>";
+                                break;
+                            case 4:
+                                // User joined room
+                                ok_msg = "<div class='contextual-message text-muted'>" + data.username +
+                                        " joined the room!" +
+                                        "</div>" + "<div class='message'><div class='body'>" + data.message
+                                        + "</div></div>";
+                                break;
+                            case 5:
+                                // User left room
+                                ok_msg = "<div class='contextual-message text-muted'>" + data.username +
+                                        " left the room!" +
+                                        "</div>";
+                                break;
+                            case 6:
+                            case 7:
+                            case 8:
+                            	ok_msg = "<div class='message'>" +
+                                "<span class='username'>" + data.username + "</span>" +
+                                "<span class='body'>" + data.message + "</span>" +
+                                "</div>";
+                        break;
+                            default:
+                                console.log("Unsupported message type!");
+                                return;
+                        }
+                        msgdiv.append(ok_msg);
+
+                        msgdiv.scrollTop(msgdiv.prop("scrollHeight"));
+                    } else {
+                        console.log("Cannot handle message!");
+                    }
+                };
+
+                // Says if we joined a room or not by if there's a div for it
+                inRoom = function (roomId, room) {
+                	console.log("Room ID: " + room + roomId);
+                    return $("#" + room + roomId).length > 0;
+                };
+
+                // Room join/leave
+                $("li." + myroom + "link").click(function () {
+                    roomId = $(this).attr("data-room-id");
+                    if (inRoom(roomId, myroom)) {
+                        // Leave room
+                        $(this).removeClass("joined");
+                        mysocket.send(JSON.stringify({
+                            "command": "leave",
+                            "room": roomId
+                        }));
+                    } else {
+                        // Join room
+                        $(this).addClass("joined");
+                        mysocket.send(JSON.stringify({
+                            "command": "join",
+                            "room": roomId
+                        }));
+                    }
+                });
+            }
+            add_room(questioner, "question-", "Play as Questioner", "Leave Game");
+            add_room(answerer, "answer-", "Play as Answerer", "Leave Game");
+
+            // Helpful debugging
+            /*socket.onopen = function () {
+                console.log("Connected to chat socket");
+            };
+            socket.onclose = function () {
+                console.log("Disconnected from chat socket");
+            }*/
+        });
+    </script>
+{% endblock %}
